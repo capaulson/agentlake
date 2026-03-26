@@ -1,0 +1,141 @@
+---
+# ConfigMap: init SQL for extensions (pgvector, AGE, pg_trgm)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: agentlake
+data:
+  01-init-extensions.sql: |
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "vector";
+    CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+    CREATE EXTENSION IF NOT EXISTS "age";
+    LOAD 'age';
+    SET search_path = ag_catalog, "$user", public;
+    DO $$
+    BEGIN
+        PERFORM create_graph('agentlake_graph');
+    EXCEPTION
+        WHEN OTHERS THEN
+            RAISE NOTICE 'Graph agentlake_graph already exists, skipping creation.';
+    END;
+    $$;
+    SET search_path = "$user", public;
+---
+# Secret: PostgreSQL credentials (base64-encoded; override in overlays for prod)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: agentlake
+type: Opaque
+stringData:
+  POSTGRES_USER: agentlake
+  POSTGRES_PASSWORD: agentlake-k8s-change-me
+  POSTGRES_DB: agentlake
+  DATABASE_URL: "postgresql+asyncpg://agentlake:agentlake-k8s-change-me@postgres:5432/agentlake"
+  DATABASE_SYNC_URL: "postgresql://agentlake:agentlake-k8s-change-me@postgres:5432/agentlake"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: agentlake
+spec:
+  clusterIP: None
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+  selector:
+    app.kubernetes.io/name: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: agentlake
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: agentlake
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          # Use an image that bundles pgvector + AGE on PostgreSQL 16
+          image: pgvector/pgvector:pg16
+          ports:
+            - containerPort: 5432
+              name: postgres
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - agentlake
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - agentlake
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: pg-data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: postgres-init
+  volumeClaimTemplates:
+    - metadata:
+        name: pg-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi

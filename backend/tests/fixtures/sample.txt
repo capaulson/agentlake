@@ -1,0 +1,5 @@
+AgentLake is a distributed data lake platform.
+
+It ingests raw unstructured files and processes them through an LLM-powered pipeline into searchable markdown with citation traceability.
+
+The system serves results through a REST API and React UI.

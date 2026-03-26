@@ -1,0 +1,9 @@
+{
+  "project": "AgentLake",
+  "version": "0.1.0",
+  "features": ["search", "processing", "citations"],
+  "config": {
+    "max_tokens": 1024,
+    "overlap": 64
+  }
+}

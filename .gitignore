@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+*.egg
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Environment
+.env
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+*.zip
+files.zip
+
+# Docker volumes
+pg-data/
+redis-data/
+minio-data/
+
+# Test datasets (generated)
+tests/test_dataset/
+
+# Lock files
+frontend/package-lock.json
+
+# Alembic auto-generated versions (keep manually)  
+# backend/alembic/versions/
+
+# Temp/output files
+/tmp/
+*.output

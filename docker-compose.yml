@@ -1,0 +1,221 @@
+# AgentLake — Development Docker Compose
+# Usage: make up (or docker compose up -d)
+
+services:
+  # ── Layer 5: Infrastructure ──────────────────────────────
+
+  postgres:
+    build:
+      context: ./infra/postgres
+      dockerfile: Dockerfile
+    container_name: agentlake-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentlake}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentlake_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-agentlake}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init-extensions.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentlake"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: agentlake-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: agentlake-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-agentlake_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-agentlake_minio_secret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Layer 4B: LLM Gateway ────────────────────────────────
+
+  llm-gateway:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: agentlake-llm-gateway
+    command: uvicorn agentlake.llm_gateway.app:app --host 0.0.0.0 --port 8001 --reload
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://agentlake:agentlake_dev_password@postgres:5432/agentlake}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      # Provider API keys (at least one required)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_SITE_NAME=${OPENROUTER_SITE_NAME:-AgentLake}
+      - OPENAI_COMPAT_ENABLED=${OPENAI_COMPAT_ENABLED:-false}
+      - OPENAI_COMPAT_API_KEY=${OPENAI_COMPAT_API_KEY:-}
+      - OPENAI_COMPAT_BASE_URL=${OPENAI_COMPAT_BASE_URL:-}
+      # Model routing
+      - LLM_DEFAULT_MODEL=${LLM_DEFAULT_MODEL:-claude-sonnet-4-20250514}
+      - LLM_EMBEDDING_MODEL=${LLM_EMBEDDING_MODEL:-voyage-3}
+      - LLM_DEFAULT_PROVIDER=${LLM_DEFAULT_PROVIDER:-anthropic}
+      - LLM_FALLBACK_ENABLED=${LLM_FALLBACK_ENABLED:-true}
+      - LLM_FALLBACK_CHAIN=${LLM_FALLBACK_CHAIN:-anthropic,openrouter}
+      # Task routing
+      - LLM_TASK_SUMMARIZE_CHUNK=${LLM_TASK_SUMMARIZE_CHUNK:-claude-sonnet-4-20250514}
+      - LLM_TASK_CLASSIFY_ONTOLOGY=${LLM_TASK_CLASSIFY_ONTOLOGY:-claude-haiku-4-5-20251001}
+      - LLM_TASK_EXTRACT_ENTITIES=${LLM_TASK_EXTRACT_ENTITIES:-claude-haiku-4-5-20251001}
+      # Internal auth + rate limits
+      - LLM_GATEWAY_SERVICE_TOKEN=${LLM_GATEWAY_SERVICE_TOKEN:-dev-internal-service-token-change-in-prod}
+      - LLM_GLOBAL_RPM=${LLM_GLOBAL_RPM:-300}
+      - LLM_PER_SERVICE_RPM=${LLM_PER_SERVICE_RPM:-100}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./backend/src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Layer 4A: API Server ─────────────────────────────────
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: agentlake-api
+    command: uvicorn agentlake.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://agentlake:agentlake_dev_password@postgres:5432/agentlake}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-agentlake_minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-agentlake_minio_secret}
+      - MINIO_BUCKET=${MINIO_BUCKET:-agentlake-vault}
+      - MINIO_SECURE=${MINIO_SECURE:-false}
+      - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:8001}
+      - LLM_GATEWAY_SERVICE_TOKEN=${LLM_GATEWAY_SERVICE_TOKEN:-dev-internal-service-token-change-in-prod}
+      - JWT_SECRET=${JWT_SECRET:-dev-jwt-secret-change-in-production}
+      - API_KEY_SALT=${API_KEY_SALT:-dev-api-key-salt-change-in-production}
+      - API_CORS_ORIGINS=${API_CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/src:/app/src
+      - ./scripts:/app/scripts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      llm-gateway:
+        condition: service_started
+
+  # ── Layer 2: Distiller Workers ───────────────────────────
+
+  distiller:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: agentlake-distiller
+    command: celery -A agentlake.workers.celery_app worker --loglevel=info --concurrency=${DISTILLER_CONCURRENCY:-4} -Q high,default,low
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://agentlake:agentlake_dev_password@postgres:5432/agentlake}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-agentlake_minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-agentlake_minio_secret}
+      - MINIO_BUCKET=${MINIO_BUCKET:-agentlake-vault}
+      - MINIO_SECURE=${MINIO_SECURE:-false}
+      - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:8001}
+      - LLM_GATEWAY_SERVICE_TOKEN=${LLM_GATEWAY_SERVICE_TOKEN:-dev-internal-service-token-change-in-prod}
+      - DISTILLER_CHUNK_MAX_TOKENS=${DISTILLER_CHUNK_MAX_TOKENS:-1024}
+      - DISTILLER_CHUNK_OVERLAP_TOKENS=${DISTILLER_CHUNK_OVERLAP_TOKENS:-64}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./backend/src:/app/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      llm-gateway:
+        condition: service_started
+
+  # ── Layer 4A: React UI ───────────────────────────────────
+
+  ui:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: dev
+    container_name: agentlake-ui
+    command: npm run dev -- --host 0.0.0.0 --port 3000
+    environment:
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+      - VITE_WS_URL=${VITE_WS_URL:-ws://localhost:8000/ws}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+    depends_on:
+      - api
+
+  # ── MCP Server (Agent 10) ──────────────────────────────
+
+  mcp-server:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: agentlake-mcp
+    command: python -m agentlake.mcp.server --transport sse --port 8002
+    environment:
+      - AGENTLAKE_API_URL=http://api:8000
+      - AGENTLAKE_API_KEY=${MCP_SERVER_API_KEY:-dev-mcp-server-key}
+      - MCP_SERVER_PORT=8002
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./backend/src:/app/src
+    depends_on:
+      - api
+
+volumes:
+  pg-data:
+    driver: local
+  redis-data:
+    driver: local
+  minio-data:
+    driver: local

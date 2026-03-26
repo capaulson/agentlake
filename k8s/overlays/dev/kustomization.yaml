@@ -1,0 +1,146 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: agentlake
+
+resources:
+  - ../../base
+
+# Dev: override with single replicas and lower resource limits
+patches:
+  # API: 1 replica, debug logging, lower resources
+  - target:
+      kind: Deployment
+      name: api
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 100m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 256Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: 500m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 512Mi
+
+  # LLM Gateway: 1 replica
+  - target:
+      kind: Deployment
+      name: llm-gateway
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 100m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 128Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: 250m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 256Mi
+
+  # Distiller: 1 replica, lower concurrency
+  - target:
+      kind: Deployment
+      name: distiller
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 200m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 512Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "1"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 1Gi
+
+  # UI: 1 replica
+  - target:
+      kind: Deployment
+      name: ui
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+
+  # HPA: lower min replicas
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: api
+    patch: |
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 2
+
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: distiller
+    patch: |
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+      - op: replace
+        path: /spec/maxReplicas
+        value: 3
+
+  # PostgreSQL: smaller PVC
+  - target:
+      kind: StatefulSet
+      name: postgres
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 250m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 512Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: 500m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 1Gi
+
+# Override ConfigMaps for dev logging
+configMapGenerator:
+  - name: api-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=DEBUG
+      - LOG_FORMAT=console
+      - API_CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+  - name: llm-gateway-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=DEBUG
+      - LOG_FORMAT=console
+  - name: distiller-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=DEBUG
+      - LOG_FORMAT=console
+      - DISTILLER_CONCURRENCY=2
+  - name: mcp-server-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=DEBUG
+      - LOG_FORMAT=console

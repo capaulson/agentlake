@@ -1,0 +1,212 @@
+---
+# CRITICAL: Only the LLM Gateway may make outbound requests to LLM provider APIs.
+# This network policy enforces the invariant that no other pod can reach external
+# LLM endpoints (Anthropic, OpenRouter, etc.).
+
+# Default: deny all egress from all pods in the namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-external-egress
+  labels:
+    app.kubernetes.io/part-of: agentlake
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS resolution for all pods
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow traffic within the agentlake namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentlake
+---
+# LLM Gateway: allow external HTTPS egress (to reach provider APIs)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: llm-gateway-egress
+  labels:
+    app.kubernetes.io/name: llm-gateway
+    app.kubernetes.io/part-of: agentlake
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: llm-gateway
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Intra-namespace (Redis, Postgres)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentlake
+    # External HTTPS (Anthropic, OpenRouter, etc.)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# PostgreSQL: only accept connections from api, llm-gateway, distiller
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: agentlake
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: llm-gateway
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: distiller
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# Redis: only accept connections from api, distiller
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-ingress
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: agentlake
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: distiller
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: llm-gateway
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# MinIO: only accept connections from api, distiller
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio-ingress
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: agentlake
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: distiller
+      ports:
+        - protocol: TCP
+          port: 9000
+        - protocol: TCP
+          port: 9001
+---
+# API: accept from ingress and mcp-server
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-ingress
+  labels:
+    app.kubernetes.io/name: api
+    app.kubernetes.io/part-of: agentlake
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  policyTypes:
+    - Ingress
+  ingress:
+    # From ingress controller (typically in ingress-nginx namespace)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+    # From MCP server within the namespace
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mcp-server
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# LLM Gateway: accept from api and distiller only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: llm-gateway-ingress
+  labels:
+    app.kubernetes.io/name: llm-gateway
+    app.kubernetes.io/part-of: agentlake
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: llm-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: distiller
+      ports:
+        - protocol: TCP
+          port: 8001

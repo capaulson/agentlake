@@ -1,0 +1,186 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: agentlake
+
+resources:
+  - ../../base
+
+# Prod: higher replicas, production resource limits, JSON logging
+patches:
+  # API: 3 replicas baseline, higher limits
+  - target:
+      kind: Deployment
+      name: api
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 500m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 768Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "2"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 2Gi
+
+  # LLM Gateway: 3 replicas
+  - target:
+      kind: Deployment
+      name: llm-gateway
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 500m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 512Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "1"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 1Gi
+
+  # Distiller: 3 replicas baseline, higher limits
+  - target:
+      kind: Deployment
+      name: distiller
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "1"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 1536Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "4"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 4Gi
+
+  # UI: 3 replicas
+  - target:
+      kind: Deployment
+      name: ui
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+
+  # MCP Server: 2 replicas for HA
+  - target:
+      kind: Deployment
+      name: mcp-server
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 100m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 256Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: 500m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 512Mi
+
+  # HPA: higher ceilings
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: api
+    patch: |
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 12
+
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: distiller
+    patch: |
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 20
+
+  # PostgreSQL: production resources
+  - target:
+      kind: StatefulSet
+      name: postgres
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "1"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 2Gi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "2"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 4Gi
+
+  # Redis: production resources
+  - target:
+      kind: StatefulSet
+      name: redis
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 250m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 512Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "1"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 1Gi
+
+# Ensure JSON logging in production
+configMapGenerator:
+  - name: api-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+  - name: llm-gateway-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+      - LLM_GLOBAL_RPM=600
+      - LLM_PER_SERVICE_RPM=200
+  - name: distiller-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+      - DISTILLER_CONCURRENCY=8
+  - name: mcp-server-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json

@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: agentlake
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - redis.yaml
+  - minio.yaml
+  - api.yaml
+  - llm-gateway.yaml
+  - distiller.yaml
+  - ui.yaml
+  - mcp-server.yaml
+  - ingress.yaml
+  - network-policy.yaml

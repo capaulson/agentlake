@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentlake
+  labels:
+    app.kubernetes.io/part-of: agentlake
+    app.kubernetes.io/managed-by: kustomize

@@ -1,0 +1,69 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agentlake-ingress
+  labels:
+    app.kubernetes.io/name: ingress
+    app.kubernetes.io/part-of: agentlake
+  annotations:
+    # NGINX Ingress Controller annotations
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # WebSocket support for /ws paths
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+    # SSE support: disable buffering for streaming endpoints
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location ~* /api/v1/.*/stream {
+          proxy_buffering off;
+          proxy_cache off;
+          proxy_set_header Connection '';
+          proxy_http_version 1.1;
+          chunked_transfer_encoding off;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - agentlake.local
+      secretName: agentlake-tls
+  rules:
+    - host: agentlake.local
+      http:
+        paths:
+          # API routes
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000
+          # WebSocket routes
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000
+          # MCP SSE endpoint (external access)
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: mcp-server
+                port:
+                  number: 8002
+          # Frontend (catch-all, must be last)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ui
+                port:
+                  number: 3000

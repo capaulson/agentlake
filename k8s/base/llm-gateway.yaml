@@ -1,0 +1,132 @@
+---
+# ConfigMap: non-secret LLM Gateway configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-gateway-config
+  labels:
+    app.kubernetes.io/name: llm-gateway
+    app.kubernetes.io/component: llm-gateway
+    app.kubernetes.io/part-of: agentlake
+data:
+  REDIS_URL: "redis://redis:6379/0"
+  LLM_DEFAULT_MODEL: "claude-sonnet-4-20250514"
+  LLM_EMBEDDING_MODEL: "voyage-3"
+  LLM_DEFAULT_PROVIDER: "anthropic"
+  LLM_FALLBACK_ENABLED: "true"
+  LLM_FALLBACK_CHAIN: "anthropic,openrouter"
+  LLM_TASK_SUMMARIZE_CHUNK: "claude-sonnet-4-20250514"
+  LLM_TASK_CLASSIFY_ONTOLOGY: "claude-haiku-4-5-20251001"
+  LLM_TASK_EXTRACT_ENTITIES: "claude-haiku-4-5-20251001"
+  LLM_GLOBAL_RPM: "300"
+  LLM_PER_SERVICE_RPM: "100"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+---
+# Secret: LLM API keys — ONLY the LLM Gateway has access to these
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llm-gateway-secret
+  labels:
+    app.kubernetes.io/name: llm-gateway
+    app.kubernetes.io/component: llm-gateway
+    app.kubernetes.io/part-of: agentlake
+type: Opaque
+stringData:
+  ANTHROPIC_API_KEY: "CHANGE-ME"
+  OPENROUTER_API_KEY: "CHANGE-ME"
+  OPENROUTER_SITE_NAME: "AgentLake"
+  OPENAI_COMPAT_ENABLED: "false"
+  OPENAI_COMPAT_API_KEY: ""
+  OPENAI_COMPAT_BASE_URL: ""
+  LLM_GATEWAY_SERVICE_TOKEN: "change-me-in-production"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-gateway
+  labels:
+    app.kubernetes.io/name: llm-gateway
+    app.kubernetes.io/component: llm-gateway
+    app.kubernetes.io/part-of: agentlake
+spec:
+  ports:
+    - port: 8001
+      targetPort: 8001
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: llm-gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-gateway
+  labels:
+    app.kubernetes.io/name: llm-gateway
+    app.kubernetes.io/component: llm-gateway
+    app.kubernetes.io/part-of: agentlake
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: llm-gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: llm-gateway
+        app.kubernetes.io/component: llm-gateway
+        app.kubernetes.io/part-of: agentlake
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: llm-gateway
+          image: agentlake/api:latest
+          command:
+            - uvicorn
+            - agentlake.llm_gateway.app:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8001"
+            - --workers
+            - "2"
+          ports:
+            - containerPort: 8001
+              name: http
+          envFrom:
+            - configMapRef:
+                name: llm-gateway-config
+            - secretRef:
+                name: llm-gateway-secret
+            - secretRef:
+                name: postgres-secret
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /api/v1/llm/health
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/v1/llm/health
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3

@@ -1,0 +1,130 @@
+---
+# ConfigMap: distiller worker configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: distiller-config
+  labels:
+    app.kubernetes.io/name: distiller
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: agentlake
+data:
+  REDIS_URL: "redis://redis:6379/0"
+  MINIO_ENDPOINT: "minio:9000"
+  MINIO_BUCKET: "agentlake-vault"
+  MINIO_SECURE: "false"
+  LLM_GATEWAY_URL: "http://llm-gateway:8001"
+  DISTILLER_CHUNK_MAX_TOKENS: "1024"
+  DISTILLER_CHUNK_OVERLAP_TOKENS: "64"
+  DISTILLER_CONCURRENCY: "4"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: distiller
+  labels:
+    app.kubernetes.io/name: distiller
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: agentlake
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: distiller
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: distiller
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: agentlake
+    spec:
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: distiller
+          image: agentlake/api:latest
+          command:
+            - celery
+            - -A
+            - agentlake.workers.celery_app
+            - worker
+            - --loglevel=info
+            - --concurrency=4
+            - -Q
+            - high,default,low
+          envFrom:
+            - configMapRef:
+                name: distiller-config
+            - secretRef:
+                name: api-secret
+            - secretRef:
+                name: postgres-secret
+            - secretRef:
+                name: minio-secret
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          # Celery workers do not serve HTTP; use exec probe to check the worker
+          livenessProbe:
+            exec:
+              command:
+                - celery
+                - -A
+                - agentlake.workers.celery_app
+                - inspect
+                - ping
+                - --timeout
+                - "5"
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: distiller
+  labels:
+    app.kubernetes.io/name: distiller
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: agentlake
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: distiller
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    # Scale on CPU as a baseline; for queue-depth-based scaling,
+    # deploy a Prometheus adapter that exposes celery_queue_length
+    # as an external metric and add it here.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 3
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
